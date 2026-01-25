@@ -1,0 +1,23 @@
+{
+  "name": "habit-tracker-whatsapp",
+  "version": "1.0.0",
+  "description": "Micro-SaaS MVP para Habit Tracker via WhatsApp",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
+  "keywords": [
+    "habit-tracker",
+    "whatsapp",
+    "micro-saas",
+    "nodejs"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "pg": "^8.13.0"
+  }
+}
