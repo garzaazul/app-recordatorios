@@ -4,7 +4,7 @@ const express = require('express');
 const pool = require('./db');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // Middleware para parsear JSON
 app.use(express.json());
@@ -16,6 +16,7 @@ app.get('/', (req, res) => {
     res.status(200).json({
         status: 'ok',
         message: 'Habit Tracker WhatsApp API is running 🚀',
+        phase: 2,
         timestamp: new Date().toISOString()
     });
 });
@@ -44,85 +45,106 @@ app.get('/webhook', (req, res) => {
 });
 
 // ============================================
-// Webhook POST - Recibir notificaciones de WhatsApp
+// Webhook POST - Lógica Principal Phase 2
 // ============================================
-app.post('/webhook', (req, res) => {
+app.post('/webhook', async (req, res) => {
     console.log('📩 Webhook recibido:', JSON.stringify(req.body, null, 2));
 
-    // TODO: Procesar mensajes entrantes de WhatsApp
-    // Por ahora solo hacemos log del body
+    try {
+        const entry = req.body.entry?.[0];
+        const changes = entry?.changes?.[0];
+        const value = changes?.value;
+        const message = value?.messages?.[0];
 
-    res.sendStatus(200);
+        if (message) {
+            const from = message.from; // Número de WhatsApp
+            const body = message.text?.body?.toLowerCase().trim();
+
+            console.log(`👤 Mensaje de ${from}: "${body}"`);
+
+            if (body === 'listo' || body === 'hecho') {
+                console.log('🎯 Procesando registro de hábito...');
+
+                // 1. Verificar/Crear Usuario
+                let userResult = await pool.query('SELECT id FROM users WHERE whatsapp_number = $1', [from]);
+                let userId;
+
+                if (userResult.rows.length === 0) {
+                    console.log('🆕 Usuario nuevo detectado. Creando...');
+                    const newUser = await pool.query(
+                        'INSERT INTO users (whatsapp_number, name) VALUES ($1, $2) RETURNING id',
+                        [from, 'Usuario Nuevo']
+                    );
+                    userId = newUser.rows[0].id;
+                } else {
+                    userId = userResult.rows[0].id;
+                }
+
+                // 2. Verificar/Crear Hábito
+                let habitResult = await pool.query('SELECT id FROM habits WHERE user_id = $1 LIMIT 1', [userId]);
+                let habitId;
+
+                if (habitResult.rows.length === 0) {
+                    console.log('🌱 No se encontraron hábitos. Creando hábito genérico...');
+                    const newHabit = await pool.query(
+                        'INSERT INTO habits (user_id, name, reminder_time) VALUES ($1, $2, $3) RETURNING id',
+                        [userId, 'Mi primer hábito', '09:00:00']
+                    );
+                    habitId = newHabit.rows[0].id;
+                } else {
+                    habitId = habitResult.rows[0].id;
+                }
+
+                // 3. Registrar Log (Evitando duplicados por día con el UNIQUE constraint)
+                console.log(`📝 Registrando cumplimiento para hábito ID: ${habitId}...`);
+                await pool.query(
+                    `INSERT INTO habit_logs (habit_id, status, logged_at) 
+                     VALUES ($1, $2, CURRENT_DATE) 
+                     ON CONFLICT (habit_id, logged_at) DO NOTHING`,
+                    [habitId, 'completed']
+                );
+
+                console.log('✅ Proceso completado con éxito');
+            }
+        }
+
+        // Siempre responder 200 OK para evitar reintentos de Meta
+        res.sendStatus(200);
+
+    } catch (error) {
+        console.error('❌ Error procesando webhook:', error);
+        // Respondemos 200 de todas formas para que Meta no se buclee, 
+        // el error queda en nuestros logs
+        res.sendStatus(200);
+    }
 });
 
 // ============================================
-// API: Crear un nuevo usuario
+// API: Endpoints de utilidad (para pruebas)
 // ============================================
 app.post('/api/users', async (req, res) => {
     const { whatsapp_number, name } = req.body;
-
-    if (!whatsapp_number) {
-        return res.status(400).json({
-            error: 'whatsapp_number es requerido'
-        });
-    }
-
     try {
         const result = await pool.query(
-            `INSERT INTO users (whatsapp_number, name) 
-             VALUES ($1, $2) 
-             RETURNING *`,
-            [whatsapp_number, name || null]
+            'INSERT INTO users (whatsapp_number, name) VALUES ($1, $2) RETURNING *',
+            [whatsapp_number, name || 'Usuario Nuevo']
         );
-
-        console.log('✅ Usuario creado:', result.rows[0]);
-
-        res.status(201).json({
-            success: true,
-            data: result.rows[0]
-        });
+        res.status(201).json(result.rows[0]);
     } catch (error) {
-        console.error('❌ Error al crear usuario:', error);
-        res.status(500).json({
-            error: 'Error al crear el usuario',
-            details: error.message
-        });
+        res.status(500).json({ error: error.message });
     }
 });
 
-// ============================================
-// API: Crear un nuevo hábito
-// ============================================
 app.post('/api/habits', async (req, res) => {
     const { user_id, name, reminder_time } = req.body;
-
-    // Validación básica
-    if (!user_id || !name) {
-        return res.status(400).json({
-            error: 'user_id y name son requeridos'
-        });
-    }
-
     try {
         const result = await pool.query(
-            `INSERT INTO habits (user_id, name, reminder_time) 
-       VALUES ($1, $2, $3) 
-       RETURNING *`,
-            [user_id, name, reminder_time || null]
+            'INSERT INTO habits (user_id, name, reminder_time) VALUES ($1, $2, $3) RETURNING *',
+            [user_id, name, reminder_time]
         );
-
-        console.log('✅ Hábito creado:', result.rows[0]);
-
-        res.status(201).json({
-            success: true,
-            data: result.rows[0]
-        });
+        res.status(201).json(result.rows[0]);
     } catch (error) {
-        console.error('❌ Error al crear hábito:', error);
-        res.status(500).json({
-            error: 'Error al crear el hábito',
-            details: error.message
-        });
+        res.status(500).json({ error: error.message });
     }
 });
 
@@ -130,7 +152,7 @@ app.post('/api/habits', async (req, res) => {
 // Iniciar servidor
 // ============================================
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor corriendo en puerto ${PORT}`);
+    console.log(`🚀 Servidor Fase 2 corriendo en puerto ${PORT}`);
     console.log(`📍 Health check: http://localhost:${PORT}/`);
     console.log(`📍 Webhook: http://localhost:${PORT}/webhook`);
 });

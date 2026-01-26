@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS habit_logs (
     id SERIAL PRIMARY KEY,
     habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
     status VARCHAR(20) NOT NULL CHECK (status IN ('completed', 'skipped', 'pending')),
-    logged_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    logged_at DATE DEFAULT CURRENT_DATE,
+    UNIQUE (habit_id, logged_at)
 );
 
 -- ============================================
