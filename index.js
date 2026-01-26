@@ -56,6 +56,41 @@ app.post('/webhook', (req, res) => {
 });
 
 // ============================================
+// API: Crear un nuevo usuario
+// ============================================
+app.post('/api/users', async (req, res) => {
+    const { whatsapp_number, name } = req.body;
+
+    if (!whatsapp_number) {
+        return res.status(400).json({
+            error: 'whatsapp_number es requerido'
+        });
+    }
+
+    try {
+        const result = await pool.query(
+            `INSERT INTO users (whatsapp_number, name) 
+             VALUES ($1, $2) 
+             RETURNING *`,
+            [whatsapp_number, name || null]
+        );
+
+        console.log('✅ Usuario creado:', result.rows[0]);
+
+        res.status(201).json({
+            success: true,
+            data: result.rows[0]
+        });
+    } catch (error) {
+        console.error('❌ Error al crear usuario:', error);
+        res.status(500).json({
+            error: 'Error al crear el usuario',
+            details: error.message
+        });
+    }
+});
+
+// ============================================
 // API: Crear un nuevo hábito
 // ============================================
 app.post('/api/habits', async (req, res) => {
