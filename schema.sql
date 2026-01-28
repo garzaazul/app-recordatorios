@@ -17,6 +17,9 @@ CREATE TABLE IF NOT EXISTS habits (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     name VARCHAR(255) NOT NULL,
     reminder_time TIME,
+    priority INTEGER DEFAULT 1,         -- 1: Normal, 3: "Eat the Frog"
+    delay_count INTEGER DEFAULT 0,      -- Veces que el usuario pospuso hoy
+    habit_type VARCHAR(20) DEFAULT 'habit', -- 'habit' o 'reminder'
     is_active BOOLEAN DEFAULT true,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -28,6 +31,7 @@ CREATE TABLE IF NOT EXISTS habit_logs (
     habit_id INTEGER NOT NULL REFERENCES habits(id) ON DELETE CASCADE,
     status VARCHAR(20) NOT NULL CHECK (status IN ('completed', 'skipped', 'pending')),
     logged_at DATE DEFAULT CURRENT_DATE,
+    feedback_note TEXT,
     UNIQUE (habit_id, logged_at)
 );
 
