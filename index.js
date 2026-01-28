@@ -1,129 +1,72 @@
-require('dotenv').config();
-const express = require('express');
-const pool = require('./db');
+// src/components/HabitForm.jsx
+import React, { useState } from 'react';
 
-const app = express();
-const PORT = process.env.PORT || 8080;
+const HabitForm = () => {
+    const [phone, setPhone] = useState('');
+    const [habit, setHabit] = useState('');
+    const [time, setTime] = useState('09:00');
 
-app.use(express.json());
+    const handleSubmit = async (e) => {
+        e.preventDefault();
+        // 1. Primero registramos/verificamos al usuario
+        const userRes = await fetch('/api/users', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ whatsapp_number: phone, name: 'Emprendedor Pro' })
+        });
+        const userData = await userRes.json();
 
-// ============================================
-// 1. Health Check & Root
-// ============================================
-app.get('/', (req, res) => {
-    res.status(200).json({ status: 'ok', mission: 'Eliminar procrastinación 🚀' });
-});
+        // 2. Creamos el hábito con prioridad alta (Eat the Frog)
+        await fetch('/api/habits', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                user_id: userData.id,
+                name: habit,
+                reminder_time: time,
+                priority: 3
+            })
+        });
 
-// ============================================
-// 2. Webhook GET - Validación de Meta
-// ============================================
-app.get('/webhook', (req, res) => {
-    const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
-    const challenge = req.query['hub.challenge'];
+        alert("¡Hábito vinculado! Recibirás un WhatsApp a la hora programada.");
+    };
 
-    if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
-        console.log('✅ Webhook verificado');
-        return res.status(200).send(challenge);
-    }
-    res.sendStatus(403);
-});
+    return (
+        <div className="p-6 max-w-md mx-auto bg-white rounded-xl shadow-md">
+            <h2 className="text-2xl font-bold text-gray-800 mb-4">Configura tu "Sapo" del Día</h2>
+            <form onSubmit={handleSubmit} className="space-y-4">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">Tu WhatsApp (con código de país)</label>
+                    <input
+                        type="text"
+                        placeholder="Ej: 56912345678"
+                        className="mt-1 block w-full p-2 border border-gray-300 rounded-md"
+                        value={phone} onChange={(e) => setPhone(e.target.value)}
+                    />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">¿Qué tarea vas a dejar de procrastinar?</label>
+                    <input
+                        type="text"
+                        placeholder="Ej: Terminar propuesta técnica"
+                        className="mt-1 block w-full p-2 border border-gray-300 rounded-md"
+                        value={habit} onChange={(e) => setHabit(e.target.value)}
+                    />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">Hora del recordatorio</label>
+                    <input
+                        type="time"
+                        className="mt-1 block w-full p-2 border border-gray-300 rounded-md"
+                        value={time} onChange={(e) => setTime(e.target.value)}
+                    />
+                </div>
+                <button className="w-full bg-green-500 text-white p-3 rounded-lg font-bold hover:bg-green-600 transition">
+                    Activar Tracker en WhatsApp
+                </button>
+            </form>
+        </div>
+    );
+};
 
-// ============================================
-// 3. Webhook POST - Lógica Anti-Procrastinación
-// ============================================
-app.post('/webhook', async (req, res) => {
-    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
-
-    if (!message) return res.sendStatus(200);
-
-    const from = message.from; // Número de WhatsApp del usuario
-    const fullBody = message.text?.body?.trim() || '';
-    const bodyLower = fullBody.toLowerCase();
-
-    try {
-        // --- A. IDENTIFICAR INTENCIÓN (Números o Palabras clave) ---
-        let status = null;
-        let isDelay = false;
-
-        if (['1', 'listo', 'hecho', 'ok', 'completado'].some(k => bodyLower.startsWith(k))) {
-            status = 'completed';
-        } else if (['2', 'luego', 'tarde', 'posponer', 'despues'].some(k => bodyLower.startsWith(k))) {
-            isDelay = true;
-        } else if (['3', 'no', 'saltar', 'no puedo'].some(k => bodyLower.startsWith(k))) {
-            status = 'skipped';
-        }
-
-        // --- B. PROCESAR SI HAY ACCIÓN ---
-        if (status || isDelay) {
-            // Buscamos al usuario y su hábito más prioritario (Eat the Frog)
-            const habitQuery = `
-                SELECT h.id, h.name 
-                FROM habits h 
-                JOIN users u ON h.user_id = u.id 
-                WHERE u.whatsapp_number = $1 AND h.is_active = true 
-                ORDER BY h.priority DESC LIMIT 1
-            `;
-            const { rows } = await pool.query(habitQuery, [from]);
-            const habit = rows[0];
-
-            if (habit) {
-                if (status) {
-                    // Registro de cumplimiento o salto
-                    const logNote = fullBody.split(/[\s,]+/).slice(1).join(' ').trim();
-                    await pool.query(
-                        `INSERT INTO habit_logs (habit_id, status, feedback_note, logged_at) 
-                         VALUES ($1, $2, $3, CURRENT_DATE) 
-                         ON CONFLICT (habit_id, logged_at) 
-                         DO UPDATE SET status = EXCLUDED.status, feedback_note = EXCLUDED.feedback_note`,
-                        [habit.id, status, logNote || null]
-                    );
-                    console.log(`📝 Hábito ${habit.id} marcado como: ${status}`);
-                } else if (isDelay) {
-                    // Lógica de procrastinación
-                    await pool.query('UPDATE habits SET delay_count = delay_count + 1 WHERE id = $1', [habit.id]);
-                    console.log(`⏳ Hábito ${habit.id} pospuesto (delay_count +1)`);
-                }
-            } else {
-                console.log(`⚠️ Usuario ${from} envió acción pero no tiene hábitos activos.`);
-            }
-        }
-
-        res.sendStatus(200);
-    } catch (error) {
-        console.error('❌ Error Webhook:', error.message);
-        res.sendStatus(200); // Meta requiere 200 para no reintentar
-    }
-});
-
-// ============================================
-// 4. API Endpoints (Admin/PWA)
-// ============================================
-app.post('/api/users', async (req, res) => {
-    const { whatsapp_number, name } = req.body;
-    try {
-        const result = await pool.query(
-            'INSERT INTO users (whatsapp_number, name) VALUES ($1, $2) ON CONFLICT (whatsapp_number) DO UPDATE SET name = EXCLUDED.name RETURNING *',
-            [whatsapp_number, name]
-        );
-        res.status(201).json(result.rows[0]);
-    } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-app.post('/api/habits', async (req, res) => {
-    const { user_id, name, reminder_time, priority } = req.body;
-    try {
-        const result = await pool.query(
-            'INSERT INTO habits (user_id, name, reminder_time, priority) VALUES ($1, $2, $3, $4) RETURNING *',
-            [user_id, name, reminder_time, priority || 1]
-        );
-        res.status(201).json(result.rows[0]);
-    } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ============================================
-// 5. Inicio del Servidor
-// ============================================
-app.listen(PORT, () => {
-    console.log(`🚀 MVP Tracker Pro activo en puerto ${PORT}`);
-});
+export default HabitForm;
