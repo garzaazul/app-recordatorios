@@ -1,182 +1,129 @@
 require('dotenv').config();
-
 const express = require('express');
 const pool = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Middleware para parsear JSON
 app.use(express.json());
 
 // ============================================
-// Health Check
+// 1. Health Check & Root
 // ============================================
 app.get('/', (req, res) => {
-    res.status(200).json({
-        status: 'ok',
-        message: 'Habit Tracker WhatsApp API is running 🚀',
-        phase: 2,
-        timestamp: new Date().toISOString()
-    });
+    res.status(200).json({ status: 'ok', mission: 'Eliminar procrastinación 🚀' });
 });
 
 // ============================================
-// Webhook GET - Validación de Meta
+// 2. Webhook GET - Validación de Meta
 // ============================================
 app.get('/webhook', (req, res) => {
-    const verifyToken = process.env.WHATSAPP_VERIFY_TOKEN;
-
     const mode = req.query['hub.mode'];
     const token = req.query['hub.verify_token'];
     const challenge = req.query['hub.challenge'];
 
-    if (mode && token) {
-        if (mode === 'subscribe' && token === verifyToken) {
-            console.log('✅ Webhook verificado correctamente');
-            res.status(200).send(challenge);
-        } else {
-            console.log('❌ Token de verificación inválido');
-            res.sendStatus(403);
-        }
-    } else {
-        res.sendStatus(400);
+    if (mode === 'subscribe' && token === process.env.WHATSAPP_VERIFY_TOKEN) {
+        console.log('✅ Webhook verificado');
+        return res.status(200).send(challenge);
     }
+    res.sendStatus(403);
 });
 
 // ============================================
-// Webhook POST - Lógica Principal Phase 2
+// 3. Webhook POST - Lógica Anti-Procrastinación
 // ============================================
 app.post('/webhook', async (req, res) => {
-    console.log('📩 Webhook recibido:', JSON.stringify(req.body, null, 2));
+    const message = req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0];
+
+    if (!message) return res.sendStatus(200);
+
+    const from = message.from; // Número de WhatsApp del usuario
+    const fullBody = message.text?.body?.trim() || '';
+    const bodyLower = fullBody.toLowerCase();
 
     try {
-        const entry = req.body.entry?.[0];
-        const changes = entry?.changes?.[0];
-        const value = changes?.value;
-        const message = value?.messages?.[0];
+        // --- A. IDENTIFICAR INTENCIÓN (Números o Palabras clave) ---
+        let status = null;
+        let isDelay = false;
 
-        if (message) {
-            const from = message.from;
-            const fullBody = message.text?.body?.trim() || '';
-            const bodyLower = fullBody.toLowerCase();
-            const firstWord = bodyLower.split(/[\s,]+/)[0];
-            const note = fullBody.split(/[\s,]+/).slice(1).join(' ').trim();
+        if (['1', 'listo', 'hecho', 'ok', 'completado'].some(k => bodyLower.startsWith(k))) {
+            status = 'completed';
+        } else if (['2', 'luego', 'tarde', 'posponer', 'despues'].some(k => bodyLower.startsWith(k))) {
+            isDelay = true;
+        } else if (['3', 'no', 'saltar', 'no puedo'].some(k => bodyLower.startsWith(k))) {
+            status = 'skipped';
+        }
 
-            console.log(`👤 Mensaje de ${from}: "${fullBody}"`);
+        // --- B. PROCESAR SI HAY ACCIÓN ---
+        if (status || isDelay) {
+            // Buscamos al usuario y su hábito más prioritario (Eat the Frog)
+            const habitQuery = `
+                SELECT h.id, h.name 
+                FROM habits h 
+                JOIN users u ON h.user_id = u.id 
+                WHERE u.whatsapp_number = $1 AND h.is_active = true 
+                ORDER BY h.priority DESC LIMIT 1
+            `;
+            const { rows } = await pool.query(habitQuery, [from]);
+            const habit = rows[0];
 
-            let status = null;
-            if (['listo', 'hecho', 'ok', 'completado'].includes(firstWord)) status = 'completed';
-            else if (['luego', 'mas tarde', 'despues', 'posponer', 'espera'].includes(firstWord)) status = 'pending'; // 'pending' but we increment delay_count
-            else if (['no', 'cancelar', 'saltar', 'no puedo'].some(k => bodyLower.startsWith(k))) status = 'skipped';
-
-            if (status || bodyLower.includes('posponer')) {
-                console.log(`🎯 Procesando acción: ${status || 'posponer'}...`);
-
-                // 1. Verificar/Crear Usuario
-                let userResult = await pool.query('SELECT id FROM users WHERE whatsapp_number = $1', [from]);
-                let userId;
-                if (userResult.rows.length === 0) {
-                    const newUser = await pool.query(
-                        'INSERT INTO users (whatsapp_number, name) VALUES ($1, $2) RETURNING id',
-                        [from, 'Usuario Nuevo']
-                    );
-                    userId = newUser.rows[0].id;
-                } else {
-                    userId = userResult.rows[0].id;
-                }
-
-                // 2. Verificar/Crear Hábito (Obtenemos el primero activo por ahora)
-                let habitResult = await pool.query('SELECT id FROM habits WHERE user_id = $1 AND is_active = true ORDER BY priority DESC, id ASC LIMIT 1', [userId]);
-                let habitId;
-                if (habitResult.rows.length === 0) {
-                    const newHabit = await pool.query(
-                        'INSERT INTO habits (user_id, name, reminder_time) VALUES ($1, $2, $3) RETURNING id',
-                        [userId, 'Mi primer hábito', '09:00:00']
-                    );
-                    habitId = newHabit.rows[0].id;
-                } else {
-                    habitId = habitResult.rows[0].id;
-                }
-
-                // 3. Ejecutar Lógica según el estado
-                if (status === 'completed' || status === 'skipped') {
-                    console.log(`📝 Registrando ${status} para hábito ID: ${habitId}...`);
+            if (habit) {
+                if (status) {
+                    // Registro de cumplimiento o salto
+                    const logNote = fullBody.split(/[\s,]+/).slice(1).join(' ').trim();
                     await pool.query(
                         `INSERT INTO habit_logs (habit_id, status, feedback_note, logged_at) 
                          VALUES ($1, $2, $3, CURRENT_DATE) 
                          ON CONFLICT (habit_id, logged_at) 
                          DO UPDATE SET status = EXCLUDED.status, feedback_note = EXCLUDED.feedback_note`,
-                        [habitId, status, note || null]
+                        [habit.id, status, logNote || null]
                     );
-                } else {
-                    // Caso: Posponer
-                    console.log(`⏳ Posponiendo hábito ID: ${habitId}...`);
-                    await pool.query(
-                        'UPDATE habits SET delay_count = delay_count + 1 WHERE id = $1',
-                        [habitId]
-                    );
-                    // Opcionalmente registrar en logs con feedback si hay nota
-                    if (note) {
-                        await pool.query(
-                            `INSERT INTO habit_logs (habit_id, status, feedback_note, logged_at) 
-                             VALUES ($1, $2, $3, CURRENT_DATE) 
-                             ON CONFLICT (habit_id, logged_at) 
-                             DO UPDATE SET feedback_note = EXCLUDED.feedback_note`,
-                            [habitId, 'pending', note]
-                        );
-                    }
+                    console.log(`📝 Hábito ${habit.id} marcado como: ${status}`);
+                } else if (isDelay) {
+                    // Lógica de procrastinación
+                    await pool.query('UPDATE habits SET delay_count = delay_count + 1 WHERE id = $1', [habit.id]);
+                    console.log(`⏳ Hábito ${habit.id} pospuesto (delay_count +1)`);
                 }
-
-                console.log('✅ Proceso completado con éxito');
+            } else {
+                console.log(`⚠️ Usuario ${from} envió acción pero no tiene hábitos activos.`);
             }
         }
 
-        // Siempre responder 200 OK para evitar reintentos de Meta
         res.sendStatus(200);
-
     } catch (error) {
-        console.error('❌ Error procesando webhook:', error);
-        // Respondemos 200 de todas formas para que Meta no se buclee, 
-        // el error queda en nuestros logs
-        res.sendStatus(200);
+        console.error('❌ Error Webhook:', error.message);
+        res.sendStatus(200); // Meta requiere 200 para no reintentar
     }
 });
 
 // ============================================
-// API: Endpoints de utilidad (para pruebas)
+// 4. API Endpoints (Admin/PWA)
 // ============================================
 app.post('/api/users', async (req, res) => {
     const { whatsapp_number, name } = req.body;
     try {
         const result = await pool.query(
-            'INSERT INTO users (whatsapp_number, name) VALUES ($1, $2) RETURNING *',
-            [whatsapp_number, name || 'Usuario Nuevo']
+            'INSERT INTO users (whatsapp_number, name) VALUES ($1, $2) ON CONFLICT (whatsapp_number) DO UPDATE SET name = EXCLUDED.name RETURNING *',
+            [whatsapp_number, name]
         );
         res.status(201).json(result.rows[0]);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 app.post('/api/habits', async (req, res) => {
-    const { user_id, name, reminder_time } = req.body;
+    const { user_id, name, reminder_time, priority } = req.body;
     try {
         const result = await pool.query(
-            'INSERT INTO habits (user_id, name, reminder_time) VALUES ($1, $2, $3) RETURNING *',
-            [user_id, name, reminder_time]
+            'INSERT INTO habits (user_id, name, reminder_time, priority) VALUES ($1, $2, $3, $4) RETURNING *',
+            [user_id, name, reminder_time, priority || 1]
         );
         res.status(201).json(result.rows[0]);
-    } catch (error) {
-        res.status(500).json({ error: error.message });
-    }
+    } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ============================================
-// Iniciar servidor
+// 5. Inicio del Servidor
 // ============================================
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor Fase 2 corriendo en puerto ${PORT}`);
-    console.log(`📍 Health check: http://localhost:${PORT}/`);
-    console.log(`📍 Webhook: http://localhost:${PORT}/webhook`);
+    console.log(`🚀 MVP Tracker Pro activo en puerto ${PORT}`);
 });
