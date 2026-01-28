@@ -57,20 +57,26 @@ app.post('/webhook', async (req, res) => {
         const message = value?.messages?.[0];
 
         if (message) {
-            const from = message.from; // Número de WhatsApp
-            const body = message.text?.body?.toLowerCase().trim();
+            const from = message.from;
+            const fullBody = message.text?.body?.trim() || '';
+            const bodyLower = fullBody.toLowerCase();
+            const firstWord = bodyLower.split(/[\s,]+/)[0];
+            const note = fullBody.split(/[\s,]+/).slice(1).join(' ').trim();
 
-            console.log(`👤 Mensaje de ${from}: "${body}"`);
+            console.log(`👤 Mensaje de ${from}: "${fullBody}"`);
 
-            if (body === 'listo' || body === 'hecho') {
-                console.log('🎯 Procesando registro de hábito...');
+            let status = null;
+            if (['listo', 'hecho', 'ok', 'completado'].includes(firstWord)) status = 'completed';
+            else if (['luego', 'mas tarde', 'despues', 'posponer', 'espera'].includes(firstWord)) status = 'pending'; // 'pending' but we increment delay_count
+            else if (['no', 'cancelar', 'saltar', 'no puedo'].some(k => bodyLower.startsWith(k))) status = 'skipped';
+
+            if (status || bodyLower.includes('posponer')) {
+                console.log(`🎯 Procesando acción: ${status || 'posponer'}...`);
 
                 // 1. Verificar/Crear Usuario
                 let userResult = await pool.query('SELECT id FROM users WHERE whatsapp_number = $1', [from]);
                 let userId;
-
                 if (userResult.rows.length === 0) {
-                    console.log('🆕 Usuario nuevo detectado. Creando...');
                     const newUser = await pool.query(
                         'INSERT INTO users (whatsapp_number, name) VALUES ($1, $2) RETURNING id',
                         [from, 'Usuario Nuevo']
@@ -80,12 +86,10 @@ app.post('/webhook', async (req, res) => {
                     userId = userResult.rows[0].id;
                 }
 
-                // 2. Verificar/Crear Hábito
-                let habitResult = await pool.query('SELECT id FROM habits WHERE user_id = $1 LIMIT 1', [userId]);
+                // 2. Verificar/Crear Hábito (Obtenemos el primero activo por ahora)
+                let habitResult = await pool.query('SELECT id FROM habits WHERE user_id = $1 AND is_active = true ORDER BY priority DESC, id ASC LIMIT 1', [userId]);
                 let habitId;
-
                 if (habitResult.rows.length === 0) {
-                    console.log('🌱 No se encontraron hábitos. Creando hábito genérico...');
                     const newHabit = await pool.query(
                         'INSERT INTO habits (user_id, name, reminder_time) VALUES ($1, $2, $3) RETURNING id',
                         [userId, 'Mi primer hábito', '09:00:00']
@@ -95,14 +99,34 @@ app.post('/webhook', async (req, res) => {
                     habitId = habitResult.rows[0].id;
                 }
 
-                // 3. Registrar Log (Evitando duplicados por día con el UNIQUE constraint)
-                console.log(`📝 Registrando cumplimiento para hábito ID: ${habitId}...`);
-                await pool.query(
-                    `INSERT INTO habit_logs (habit_id, status, logged_at) 
-                     VALUES ($1, $2, CURRENT_DATE) 
-                     ON CONFLICT (habit_id, logged_at) DO NOTHING`,
-                    [habitId, 'completed']
-                );
+                // 3. Ejecutar Lógica según el estado
+                if (status === 'completed' || status === 'skipped') {
+                    console.log(`📝 Registrando ${status} para hábito ID: ${habitId}...`);
+                    await pool.query(
+                        `INSERT INTO habit_logs (habit_id, status, feedback_note, logged_at) 
+                         VALUES ($1, $2, $3, CURRENT_DATE) 
+                         ON CONFLICT (habit_id, logged_at) 
+                         DO UPDATE SET status = EXCLUDED.status, feedback_note = EXCLUDED.feedback_note`,
+                        [habitId, status, note || null]
+                    );
+                } else {
+                    // Caso: Posponer
+                    console.log(`⏳ Posponiendo hábito ID: ${habitId}...`);
+                    await pool.query(
+                        'UPDATE habits SET delay_count = delay_count + 1 WHERE id = $1',
+                        [habitId]
+                    );
+                    // Opcionalmente registrar en logs con feedback si hay nota
+                    if (note) {
+                        await pool.query(
+                            `INSERT INTO habit_logs (habit_id, status, feedback_note, logged_at) 
+                             VALUES ($1, $2, $3, CURRENT_DATE) 
+                             ON CONFLICT (habit_id, logged_at) 
+                             DO UPDATE SET feedback_note = EXCLUDED.feedback_note`,
+                            [habitId, 'pending', note]
+                        );
+                    }
+                }
 
                 console.log('✅ Proceso completado con éxito');
             }
