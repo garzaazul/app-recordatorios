@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import Dashboard from './components/Dashboard';
+import Onboarding from './components/Onboarding';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8080';
 
@@ -10,6 +11,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState({ type: '', text: '' });
   const [registeredPhone, setRegisteredPhone] = useState('');
+  const [showOnboarding, setShowOnboarding] = useState(false);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -56,8 +58,9 @@ function App() {
 
       // Guardar el teléfono registrado para mostrar el dashboard
       setRegisteredPhone(phone);
+      setShowOnboarding(true);
 
-      // Limpiar formulario
+      // Limpiar campos del hábito pero mantener el teléfono
       setHabit('');
       setTime('09:00');
     } catch (error) {
@@ -161,6 +164,9 @@ function App() {
             )}
           </button>
         </form>
+
+        {/* Onboarding Instructions */}
+        {showOnboarding && <Onboarding phone={registeredPhone} />}
 
         {/* Dashboard de Estadísticas */}
         {registeredPhone && <Dashboard whatsappNumber={registeredPhone} />}

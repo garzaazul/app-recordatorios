@@ -215,8 +215,79 @@ app.get('/api/stats/:whatsapp_number', async (req, res) => {
 });
 
 // ============================================
-// 6. Inicio del Servidor
+// 6. Verificación de Teléfono (Onboarding)
+// ============================================
+app.get('/api/verify-phone/:phone', async (req, res) => {
+    const { phone } = req.params;
+
+    try {
+        // Verificar si el usuario existe
+        const userResult = await pool.query(
+            'SELECT id, name, created_at FROM users WHERE whatsapp_number = $1',
+            [phone]
+        );
+
+        if (userResult.rows.length === 0) {
+            return res.json({
+                exists: false,
+                message: 'Número no registrado. Completa el formulario para vincular.'
+            });
+        }
+
+        const user = userResult.rows[0];
+
+        // Contar hábitos activos
+        const habitsResult = await pool.query(
+            'SELECT COUNT(*) as count FROM habits WHERE user_id = $1 AND is_active = true',
+            [user.id]
+        );
+        const activeHabits = parseInt(habitsResult.rows[0]?.count || 0);
+
+        res.json({
+            exists: true,
+            user: {
+                id: user.id,
+                name: user.name,
+                createdAt: user.created_at
+            },
+            activeHabits,
+            message: activeHabits > 0
+                ? `✅ Tu número está vinculado con ${activeHabits} hábito(s) activo(s).`
+                : '⚠️ Tu número está registrado pero no tienes hábitos activos.'
+        });
+    } catch (error) {
+        console.error('❌ Error verificando teléfono:', error.message);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ============================================
+// 7. Health Check del Sistema (para Railway)
+// ============================================
+app.get('/api/health', async (req, res) => {
+    try {
+        // Verificar conexión a la BD
+        await pool.query('SELECT 1');
+
+        res.json({
+            status: 'ok',
+            database: 'connected',
+            whatsapp: process.env.META_ACCESS_TOKEN ? 'configured' : 'pending',
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        res.status(500).json({
+            status: 'error',
+            database: 'disconnected',
+            error: error.message
+        });
+    }
+});
+
+// ============================================
+// 8. Inicio del Servidor
 // ============================================
 app.listen(PORT, () => {
     console.log(`🚀 MVP Tracker Pro activo en puerto ${PORT}`);
+    console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
 });
