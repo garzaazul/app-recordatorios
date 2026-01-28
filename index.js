@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 const pool = require('./db');
 const { getDynamicMessage, getReminderMessage } = require('./service/motivationService');
 const { sendWhatsAppMessage } = require('./service/whatsappService');
@@ -12,9 +13,14 @@ app.use(express.json());
 app.use(cors());
 
 // ============================================
-// 1. Health Check & Root
+// Servir Frontend estático (React build)
 // ============================================
-app.get('/', (req, res) => {
+app.use(express.static(path.join(__dirname, 'frontend', 'dist')));
+
+// ============================================
+// 1. Health Check (API)
+// ============================================
+app.get('/api/status', (req, res) => {
     res.status(200).json({ status: 'ok', mission: 'Eliminar procrastinación 🚀' });
 });
 
@@ -285,7 +291,14 @@ app.get('/api/health', async (req, res) => {
 });
 
 // ============================================
-// 8. Inicio del Servidor
+// Catch-all: Servir React SPA para rutas del frontend
+// ============================================
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'frontend', 'dist', 'index.html'));
+});
+
+// ============================================
+// 9. Inicio del Servidor
 // ============================================
 app.listen(PORT, () => {
     console.log(`🚀 MVP Tracker Pro activo en puerto ${PORT}`);
